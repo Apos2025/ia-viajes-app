@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import openai
 from dotenv import load_dotenv
-from amadeus import Client, ResponseError  # Importamos el cliente de Amadeus
+from amadeus import Client, ResponseError
 
 load_dotenv()
 
@@ -12,7 +12,6 @@ load_dotenv()
 client_openai = openai.OpenAI()
 app = FastAPI()
 
-# --- NUEVA CONFIGURACIÓN PARA AMADEUS ---
 try:
     amadeus = Client(
         client_id=os.getenv("AMADEUS_API_KEY"),
@@ -22,57 +21,71 @@ except Exception as e:
     print(f"Error al inicializar el cliente de Amadeus: {e}")
     amadeus = None
 
-# ... la configuración de CORS sigue igual ...
-origins = ["http://localhost:3000", "https://ia-viajes-app.vercel.app"]
+# --- Configuración de CORS ---
+origins = [
+    "http://localhost:3000",
+    "https://ia-viajes-app.vercel.app",
+]
 app.add_middleware(CORSMiddleware, allow_origins=origins,
                    allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 
-# --- NUEVA FUNCIÓN DE BÚSQUEDA CON AMADEUS ---
+# --- Función de Búsqueda de Hoteles con Amadeus (Versión Corregida) ---
+def get_hotel_ids_by_location(latitude, longitude):
+    try:
+        hotels_by_geo_response = amadeus.reference_data.locations.hotels.by_geocode.get(
+            latitude=latitude, longitude=longitude, radius=20, radiusUnit='KM', ratings='3,4,5', hotelSource='ALL'
+        )
+        if not hotels_by_geo_response.data:
+            return []
+        hotel_ids = [hotel['hotelId']
+            for hotel in hotels_by_geo_response.data[:5]]
+        print(f"IDs de hoteles encontrados: {hotel_ids}")
+        return hotel_ids
+    except ResponseError as e:
+        print(f"Error obteniendo IDs de hoteles: {e}")
+        return []
+
+
 def search_real_hotels(destination_name: str):
     if not amadeus:
         return "El servicio de búsqueda de hoteles no está disponible."
-
     try:
         print(f"Buscando hoteles en Amadeus para: {destination_name}")
-        # 1. Amadeus necesita un código de ciudad IATA (ej: 'MAD' para Madrid). Lo buscamos primero.
         city_search = amadeus.reference_data.locations.get(
-            keyword=destination_name,
-            subType='CITY'
-        )
+            keyword=destination_name, subType='CITY')
         if not city_search.data:
             return "No se encontró el destino."
 
-        city_code = city_search.data[0]['iataCode']
-        print(f"Código de ciudad encontrado: {city_code}")
+        location = city_search.data[0]
+        latitude = location['geoCode']['latitude']
+        longitude = location['geoCode']['longitude']
+        print(f"Coordenadas encontradas: Lat {latitude}, Lon {longitude}")
 
-        # 2. Ahora buscamos ofertas de hotel en esa ciudad.
-        hotel_offers = amadeus.shopping.hotel_offers.get(
-            cityCode=city_code,
-            radius=20,
-            radiusUnit='KM',
-            ratings='3,4,5',  # Buscamos hoteles de 3, 4 y 5 estrellas
-            view='LIGHT',  # Pedimos una vista ligera para no gastar mucha cuota
-            bestRateOnly=True
-        )
+        hotel_ids = get_hotel_ids_by_location(latitude, longitude)
+        if not hotel_ids:
+            return "No se encontraron hoteles para este destino."
 
-        if not hotel_offers.data:
+        hotel_offers_response = amadeus.shopping.hotel_offers_by_hotel.get(
+            hotelIds=hotel_ids)
+        if not hotel_offers_response.data:
             return "No se encontraron ofertas de hotel para este destino."
 
-        # 3. Formateamos la respuesta para la IA
         formatted_hotels = []
-        # Tomamos hasta 3 hoteles como máximo
-        for offer in hotel_offers.data[:3]:
-            hotel = offer['hotel']
-            price = offer['offers'][0]['price']['total']
-            hotel_info = f"- Nombre: {hotel['name']}, Valoración: {hotel.get('rating', 'N/A')} estrellas, Precio aprox: {price} {offer['offers'][0]['price']['currency']}."
+        for offer in hotel_offers_response.data[:3]:
+            hotel = offer.get('hotel', {})
+            price_info = offer.get('offers', [{}])[0].get('price', {})
+            price = price_info.get('total', 'N/A')
+            currency = price_info.get('currency', '')
+            hotel_info = f"- Nombre: {hotel.get('name', 'Nombre no disponible')}, Precio aprox: {price} {currency}."
             formatted_hotels.append(hotel_info)
 
         return "\n".join(formatted_hotels)
-
     except ResponseError as e:
         print(f"Error en la API de Amadeus: {e}")
         return "Hubo un problema al buscar hoteles en Amadeus."
+
+# --- Definición del Modelo de Petición ---
 
 
 class TripRequest(BaseModel):
@@ -80,18 +93,16 @@ class TripRequest(BaseModel):
     dates: str
     budget: float | None = None
 
+# --- Endpoint Principal ---
 
-# Dentro de la función generate_trip en main.py
 
 @app.post("/api/generate-trip")
 def generate_trip(request: TripRequest):
     real_hotel_data = search_real_hotels(request.destination)
 
-    budget_info_prompt = ""
-    if request.budget and request.budget > 0:
-        budget_info_prompt = f"El presupuesto aproximado para el viaje es de {request.budget} euros. Ten muy en cuenta este presupuesto para todas las recomendaciones."
+    budget_info_prompt = f"El presupuesto aproximado para el viaje es de {request.budget} euros. Ten muy en cuenta este presupuesto para todas las recomendaciones." if request.budget and request.budget > 0 else "No se ha especificado un presupuesto, ofrece una mezcla de opciones."
 
-    # --- ESTE ES EL NUEVO PROMPT MEJORADO ---
+    # --- EL PROMPT MEJORADO Y DETALLADO ---
     prompt = f"""
     **Tu Rol:** Eres un agente de viajes de élite, amigable, extremadamente detallista y servicial. Tu objetivo es crear un itinerario inolvidable.
 
@@ -99,26 +110,9 @@ def generate_trip(request: TripRequest):
 
     **Contexto y Datos Reales (¡MUY IMPORTANTE!):**
     He realizado una búsqueda de hoteles disponibles en la zona y he encontrado las siguientes opciones reales. **DEBES** basar tu recomendación de alojamiento en una de estas opciones, justificando tu elección. No inventes hoteles ni precios.
-
+    
     Hoteles Disponibles:
     {real_hotel_data}
 
     **Instrucciones Específicas:**
-    1.  **Estructura:** Organiza el plan día por día (Día 1, Día 2, Día 3). Para cada día, detalla sugerencias para la mañana, tarde y noche.
-    2.  **Alojamiento:** En el "Día 1", recomienda explícitamente **uno** de los hoteles de la lista proporcionada. Justifica por qué es una buena opción (ej: "Te recomiendo alojarte en el 'Hotel X' por su buena valoración y precio...").
-    3.  **Presupuesto:** {budget_info_prompt if budget_info_prompt else "No se ha especificado un presupuesto, ofrece una mezcla de opciones."}
-    4.  **Tono:** Mantén un tono entusiasta y práctico.
-    5.  **Formato:** Usa saltos de línea para que sea fácil de leer. Usa negritas para resaltar lugares o actividades clave.
-    """
-
-    try:
-        # ... el resto de la función sigue igual ...
-        completion = client_openai.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        itinerary_text = completion.choices[0].message.content
-    except openai.APIError as e:
-        return {"error": "Hubo un problema al contactar con la IA."}
-
-    return {"itinerary": itinerary_text}
+    1.  **Estructura:** Organiza el plan día por día (Día 1, Día 2, Día 3). Para cada día,
