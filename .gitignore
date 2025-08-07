@@ -1,0 +1,12 @@
+# Python
+/backend/venv/
+/backend/__pycache__/
+
+# Frontend
+/frontend/node_modules/
+
+# Secrets
+.env
+
+# Archivos de Sistema Operativo
+.DS_Store
