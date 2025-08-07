@@ -17,7 +17,8 @@ function TravelForm() {
     setError(null);
 
     try {
-      const response = await fetch('http://localhost:8000/api/generate-trip', {
+      const apiUrl = `${process.env.REACT_APP_API_URL}/api/generate-trip`;
+      const response = await fetch(apiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
