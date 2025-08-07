@@ -6,12 +6,14 @@ import openai
 from dotenv import load_dotenv
 from amadeus import Client, ResponseError
 
+# Carga las variables de entorno desde el archivo .env
 load_dotenv()
 
 # --- Configuración de Clientes y la App ---
 client_openai = openai.OpenAI()
 app = FastAPI()
 
+# Inicializa el cliente de Amadeus de forma segura
 try:
     amadeus = Client(
         client_id=os.getenv("AMADEUS_API_KEY"),
@@ -26,12 +28,21 @@ origins = [
     "http://localhost:3000",
     "https://ia-viajes-app.vercel.app",
 ]
-app.add_middleware(CORSMiddleware, allow_origins=origins,
-                   allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- Funciones de Búsqueda de Hoteles con Amadeus ---
 
 
-# --- Función de Búsqueda de Hoteles con Amadeus (Versión Corregida) ---
 def get_hotel_ids_by_location(latitude, longitude):
+    if not amadeus:
+        return []
     try:
         hotels_by_geo_response = amadeus.reference_data.locations.hotels.by_geocode.get(
             latitude=latitude, longitude=longitude, radius=20, radiusUnit='KM', ratings='3,4,5', hotelSource='ALL'
@@ -102,23 +113,33 @@ def generate_trip(request: TripRequest):
 
     budget_info_prompt = f"El presupuesto aproximado para el viaje es de {request.budget} euros. Ten muy en cuenta este presupuesto para todas las recomendaciones." if request.budget and request.budget > 0 else "No se ha especificado un presupuesto, ofrece una mezcla de opciones."
 
+    prompt = f"""
+    **Tu Rol:** Eres un agente de viajes de élite, amigable, extremadamente detallista y servicial. Tu objetivo es crear un itinerario inolvidable.
 
-    # Este es el bloque que debes reemplazar
-prompt = f"""
-**Tu Rol:** Eres un agente de viajes de élite, amigable, extremadamente detallista y servicial. Tu objetivo es crear un itinerario inolvidable.
+    **Tarea Principal:** Crea un itinerario detallado de 3 días para un viaje a {request.destination} durante las fechas {request.dates}.
 
-**Tarea Principal:** Crea un itinerario detallado de 3 días para un viaje a {request.destination} durante las fechas {request.dates}.
+    **Contexto y Datos Reales (¡MUY IMPORTANTE!):**
+    He realizado una búsqueda de hoteles disponibles en la zona y he encontrado las siguientes opciones reales. **DEBES** basar tu recomendación de alojamiento en una de estas opciones, justificando tu elección. No inventes hoteles ni precios.
+    
+    Hoteles Disponibles:
+    {real_hotel_data}
 
-**Contexto y Datos Reales (¡MUY IMPORTANTE!):**
-He realizado una búsqueda de hoteles disponibles en la zona y he encontrado las siguientes opciones reales. **DEBES** basar tu recomendación de alojamiento en una de estas opciones, justificando tu elección. No inventes hoteles ni precios.
+    **Instrucciones Específicas:**
+    1.  **Estructura:** Organiza el plan día por día (Día 1, Día 2, Día 3). Para cada día, detalla sugerencias para la mañana, tarde y noche.
+    2.  **Alojamiento:** En el "Día 1", recomienda explícitamente **uno** de los hoteles de la lista proporcionada. Justifica por qué es una buena opción (ej: "Te recomiendo alojarte en el 'Hotel X' por su buena valoración...").
+    3.  **Presupuesto:** {budget_info_prompt}
+    4.  **Tono:** Mantén un tono entusiasta y práctico.
+    5.  **Formato:** Usa saltos de línea para que sea fácil de leer. Usa negritas para resaltar lugares o actividades clave.
+    """
 
-Hoteles Disponibles:
-{real_hotel_data}
+    try:
+        completion = client_openai.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        itinerary_text = completion.choices[0].message.content
+    except openai.APIError as e:
+        print(f"Error en la API de OpenAI: {e}")
+        return {"error": "Hubo un problema al contactar con la IA."}
 
-**Instrucciones Específicas:**
-1.  **Estructura:** Organiza el plan día por día (Día 1, Día 2, Día 3). Para cada día, detalla sugerencias para la mañana, tarde y noche.
-2.  **Alojamiento:** En el "Día 1", recomienda explícitamente **uno** de los hoteles de la lista proporcionada. Justifica por qué es una buena opción (ej: "Te recomiendo alojarte en el 'Hotel X' por su buena valoración...").
-3.  **Presupuesto:** {budget_info_prompt}
-4.  **Tono:** Mantén un tono entusiasta y práctico.
-5.  **Formato:** Usa saltos de línea para que sea fácil de leer. Usa negritas para resaltar lugares o actividades clave.
-"""
+    return {"itinerary": itinerary_text}
