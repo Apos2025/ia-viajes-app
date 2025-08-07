@@ -18,6 +18,7 @@ app = FastAPI()
 # Orígenes permitidos (en nuestro caso, la app de React)
 origins = [
     "http://localhost:3000",
+    "https://ia-viajes-app.vercel.app",  # <-- Así debe quedar
 ]
 
 app.add_middleware(
