@@ -1,5 +1,5 @@
 {
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "https://TU-SERVICIO-RENDER.onrender.com/api/$1" }
+    { "source": "/api/(.*)", "destination": "https://eztravel-lld4.onrender.com/api/$1" }
   ]
 }
